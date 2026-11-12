@@ -1,7 +1,7 @@
 # BalanceVault — Frontend
 
 React web app for BalanceVault: sign-in, registration and onboarding, role-aware dashboards, admin tools and
-the audit log viewer. It talks to the BalanceVault API, which lives in a separate repository/folder (`Backend`).
+the audit log viewer. This repository is standalone. It talks to the BalanceVault API, which lives in its own repository ([vault_backend](https://github.com/Yashuu582/vault_backend)), only over HTTP.
 
 | Piece | Technology |
 |---|---|
@@ -44,6 +44,16 @@ docker run -d -p 5173:8080 --name balancevault-frontend balancevault-frontend
 ```
 
 Open http://localhost:5173. nginx serves `index.html` for every app route, so refreshing `/admin/users` works.
+
+## Deploy (Vercel, free)
+
+1. In [`vercel.json`](vercel.json), replace `YOUR-BACKEND` with the backend's Render name (3 places). Commit and push.
+2. **Vercel** → Add New → Project → import this repository. Framework **Vite**, build `npm run build`,
+   output `dist`. **No environment variables** (leave `VITE_API_URL` unset).
+3. Deploy, then put the Vercel URL in the backend's `CORS_ORIGINS` and `FRONTEND_URL`.
+
+`vercel.json` forwards `/api`, `/health` and `/ready` to the backend, so the browser sees a single origin and
+the httpOnly auth cookies work. It also serves `index.html` for app routes such as `/admin/users`.
 
 ## Pages and access
 
