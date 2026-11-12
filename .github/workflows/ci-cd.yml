@@ -1,0 +1,145 @@
+# BalanceVault frontend - CI/CD
+#
+#   Pull request -> main : build check (+ Vercel preview deployment when the secrets are set)
+#   Push to main         : build check -> Vercel production deployment -> smoke test
+#
+# Vercel's own Git auto-deploy is turned off in vercel.json ("git.deploymentEnabled": false),
+# so production only changes when this workflow succeeds.
+#
+# One-time setup (see README "CI/CD"):
+#   Secrets   (Settings > Secrets and variables > Actions > Secrets):
+#     VERCEL_TOKEN        Vercel > Account Settings > Tokens
+#     VERCEL_ORG_ID       Vercel > Team/Account Settings > General > ID
+#     VERCEL_PROJECT_ID   Vercel > Project > Settings > General > Project ID
+#   Variables (Settings > Secrets and variables > Actions > Variables):
+#     FRONTEND_URL        e.g. https://balancevault-yashu.vercel.app
+#   Optional: Settings > Environments > production > Required reviewers  (manual approval)
+
+name: Frontend CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: "22"
+  VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+  VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+jobs:
+  build:
+    name: Build check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+  preview:
+    name: Preview deployment (pull request)
+    # Only for PRs from this repository (forks don't get secrets).
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Deploy preview
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -z "$VERCEL_TOKEN" ]; then echo "VERCEL_TOKEN not set - skipping preview."; exit 0; fi
+          npm install --global vercel@latest
+          vercel pull --yes --environment=preview --token="$VERCEL_TOKEN"
+          vercel build --token="$VERCEL_TOKEN"
+          url=$(vercel deploy --prebuilt --token="$VERCEL_TOKEN")
+          echo "Preview: $url"
+          echo "### Preview deployment: $url" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy to Vercel (production)
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: ${{ vars.FRONTEND_URL }}
+    concurrency:
+      group: frontend-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Check required settings
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+        run: |
+          missing=0
+          for name in VERCEL_TOKEN VERCEL_ORG_ID VERCEL_PROJECT_ID FRONTEND_URL; do
+            if [ -z "${!name}" ]; then echo "::error::$name is not set (see the setup notes at the top of this file)"; missing=1; fi
+          done
+          exit $missing
+
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+
+      - name: Pull Vercel project settings
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+
+      - name: Build
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: vercel build --prod --token="$VERCEL_TOKEN"
+
+      - name: Deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          url=$(vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN")
+          echo "Deployed: $url"
+          echo "### Production deployment: $url" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Smoke test
+        env:
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+        run: |
+          # The app loads ...
+          curl -fsS --max-time 30 "$FRONTEND_URL/" | grep -q "<title>BalanceVault</title>"
+          # ... client-side routes resolve to index.html ...
+          curl -fsS --max-time 30 -o /dev/null "$FRONTEND_URL/login"
+          # ... and /ready is forwarded to the backend (allow time for the free backend to wake up).
+          for attempt in 1 2 3 4 5 6; do
+            if curl -fsS --max-time 90 "$FRONTEND_URL/ready" | jq -e '.checks.database == "ok"'; then exit 0; fi
+            echo "Backend not ready yet (attempt $attempt/6), retrying..."; sleep 20
+          done
+          echo "::error::Frontend is up, but /ready through the Vercel rewrite did not report database ok."
+          exit 1
