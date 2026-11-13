@@ -1,4 +1,5 @@
 # BalanceVault — Frontend
+The backend code is available in the GitHub repository: https://github.com/Yashuu582/vault_backend
 
 React web app for BalanceVault: sign-in, registration and onboarding, role-aware dashboards, admin tools and
 the audit log viewer. This repository is standalone. It talks to the BalanceVault API, which lives in its own repository ([vault_backend](https://github.com/Yashuu582/vault_backend)), only over HTTP.
